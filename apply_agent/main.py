@@ -24,6 +24,7 @@ import os
 import sys
 
 from agno.agent import Agent
+from agno.db.in_memory import InMemoryDb
 from agno.models.openai import OpenAIChat
 from agno.tools.mcp import MCPTools
 from dotenv import load_dotenv
@@ -125,6 +126,10 @@ def build_mcp_tools() -> MCPTools:
         return MCPTools(command=command, timeout_seconds=30)
     if url:
         transport = os.getenv("MCP_TRANSPORT", "streamable-http")
+        # NOTE: refresh_connection=True triggers an anyio cross-task cancel-scope
+        # crash with this client, so we leave it off. The harmless "Session
+        # terminated" ping warnings from the serverless MCP do not affect the
+        # actual tool calls, which succeed.
         return MCPTools(url=url, transport=transport, timeout_seconds=30)
 
     raise SystemExit(
@@ -145,15 +150,33 @@ async def run(task: str) -> None:
         agent = Agent(
             model=OpenAIChat(id=model_id),
             tools=[mcp_tools],
+            db=InMemoryDb(),
+            session_id="apply-session",
             instructions=INSTRUCTIONS.format(
                 resume_directive=build_resume_directive(),
                 profile=build_profile(),
                 resume=resume_text,
             ),
             markdown=True,
-            add_history_to_messages=True,
+            add_history_to_context=True,
         )
+
+        # First turn: the agent drafts the application and pauses for confirmation.
         await agent.aprint_response(task, stream=True)
+
+        # Interactive loop so you can reply (e.g. "confirm") and the agent
+        # continues with the same session — remembering the draft_id etc.
+        while True:
+            try:
+                reply = (await asyncio.to_thread(
+                    input, "\nYour reply ('confirm' to submit, or 'quit'): "
+                )).strip()
+            except EOFError:
+                break
+            if not reply or reply.lower() in {"quit", "exit", "q"}:
+                print("Exiting without finalizing.")
+                break
+            await agent.aprint_response(reply, stream=True)
 
 
 def main() -> None:
