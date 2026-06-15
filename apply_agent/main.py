@@ -48,6 +48,9 @@ Workflow:
   agent_name "Claude Code", agent_vendor "Anthropic", agent_model the model in
   use.
 
+Resume submission:
+- {resume_directive}
+
 Guidelines:
 - Ground every claim in the resume/profile. Never invent experience, skills,
   employers, dates, links, or credentials the candidate does not have.
@@ -72,6 +75,31 @@ Guidelines:
 {resume}
 === END RESUME ===
 """
+
+
+def build_resume_directive() -> str:
+    """Tell the agent how to call submit_resume based on the configured mode."""
+    mode = os.getenv("RESUME_SUBMIT_MODE", "text").lower()
+    url = os.getenv("RESUME_URL")
+    mime = os.getenv("RESUME_MIME_TYPE", "application/pdf")
+
+    if mode == "url":
+        if not url:
+            raise SystemExit("RESUME_SUBMIT_MODE=url but RESUME_URL is not set.")
+        return (
+            f"Call submit_resume with ONLY the hosted file: resume_url='{url}' and "
+            f"resume_mime_type='{mime}'. Do NOT pass resume_text — the candidate "
+            "wants the uploaded resume submitted, not pasted text. Use the resume "
+            "content below only to tailor your free-text answers."
+        )
+    if mode == "both" and url:
+        return (
+            f"Call submit_resume with BOTH the hosted file (resume_url='{url}', "
+            f"resume_mime_type='{mime}') and the resume markdown text below."
+        )
+    return (
+        "Call submit_resume with the resume markdown text (resume_text) shown below."
+    )
 
 
 def build_profile() -> str:
@@ -118,7 +146,9 @@ async def run(task: str) -> None:
             model=OpenAIChat(id=model_id),
             tools=[mcp_tools],
             instructions=INSTRUCTIONS.format(
-                profile=build_profile(), resume=resume_text
+                resume_directive=build_resume_directive(),
+                profile=build_profile(),
+                resume=resume_text,
             ),
             markdown=True,
             add_history_to_messages=True,
